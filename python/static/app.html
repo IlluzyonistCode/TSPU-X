@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TSPU X</title>
+  <!-- Recharts + React from CDN so no npm build needed for dev -->
+  <script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
+  <style>
+    :root {
+      --bg-deep:    #080808;
+      --bg-panel:   #111111;
+      --bg-card:    #1a1a1a;
+      --red-bright: #e03030;
+      --red-mid:    #b02020;
+      --red-dim:    #6e1515;
+      --red-glow:   rgba(200, 30, 30, 0.18);
+      --text-main:  #e8e8e8;
+      --text-muted: #7a7a7a;
+      --border:     #2c1010;
+      --green:      #2ecc71;
+      --font:       'JetBrains Mono', 'Consolas', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg-deep); color: var(--text-main); font-family: var(--font); }
+    a { color: var(--red-bright); text-decoration: none; }
+
+    /* Layout */
+    .layout { display: flex; height: 100vh; overflow: hidden; }
+
+    /* Sidebar */
+    .sidebar {
+      width: 220px; min-width: 220px;
+      background: var(--bg-panel);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      padding: 0;
+    }
+    .logo {
+      padding: 20px 18px 16px;
+      font-size: 1.35rem; font-weight: 700;
+      color: var(--red-bright);
+      letter-spacing: 2px;
+      border-bottom: 1px solid var(--border);
+      text-shadow: 0 0 18px var(--red-bright);
+    }
+    .logo span { color: var(--text-muted); font-size: 0.65rem; display: block; letter-spacing: 1px; margin-top: 2px; }
+    .nav { padding: 12px 0; flex: 1; }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 18px; cursor: pointer;
+      font-size: 0.82rem; letter-spacing: 0.5px;
+      color: var(--text-muted);
+      border-left: 3px solid transparent;
+      transition: all 0.18s;
+    }
+    .nav-item:hover { color: var(--text-main); background: var(--red-glow); }
+    .nav-item.active {
+      color: var(--red-bright);
+      border-left-color: var(--red-bright);
+      background: var(--red-glow);
+    }
+    .sidebar-footer { padding: 14px 18px; border-top: 1px solid var(--border); }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green); display: inline-block;
+      box-shadow: 0 0 6px var(--green); margin-right: 6px;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* Main content */
+    .main { flex: 1; overflow-y: auto; padding: 24px 28px; }
+    .page-title {
+      font-size: 1.1rem; font-weight: 700; color: var(--red-bright);
+      letter-spacing: 1px; margin-bottom: 20px;
+      text-transform: uppercase; border-bottom: 1px solid var(--border); padding-bottom: 10px;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 16px 20px;
+      margin-bottom: 16px;
+    }
+    .card-title {
+      font-size: 0.72rem; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 1px;
+      margin-bottom: 10px;
+    }
+
+    /* Grid */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+    /* Stat big number */
+    .stat-num { font-size: 2rem; font-weight: 700; color: var(--red-bright); }
+    .stat-label { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
+
+    /* Table */
+    .tbl { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .tbl th {
+      text-align: left; padding: 7px 10px;
+      color: var(--text-muted); font-weight: 400;
+      border-bottom: 1px solid var(--border);
+      text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.5px;
+    }
+    .tbl td { padding: 7px 10px; border-bottom: 1px solid #1a1a1a; }
+    .tbl tr:hover td { background: var(--red-glow); }
+
+    /* Progress bar */
+    .prog-wrap { background: #1a1a1a; border-radius: 2px; height: 4px; margin-top: 4px; }
+    .prog-bar { height: 4px; border-radius: 2px; background: var(--red-bright); transition: width 0.4s; }
+
+    /* Badge */
+    .badge {
+      display: inline-block; padding: 2px 8px;
+      border-radius: 2px; font-size: 0.68rem; font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    .badge-red   { background: var(--red-dim); color: var(--red-bright); }
+    .badge-green { background: #0d2e1a; color: var(--green); }
+    .badge-gray  { background: #1e1e1e; color: var(--text-muted); }
+
+    /* Forms */
+    input, select, textarea {
+      background: #1a1a1a; border: 1px solid var(--border);
+      color: var(--text-main); font-family: var(--font); font-size: 0.82rem;
+      padding: 7px 10px; border-radius: 3px; width: 100%;
+      outline: none; transition: border-color 0.18s;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--red-mid); }
+    label { font-size: 0.72rem; color: var(--text-muted); display: block; margin-bottom: 4px; }
+    .form-row { margin-bottom: 12px; }
+    .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+    /* Buttons */
+    .btn {
+      padding: 7px 18px; border: none; border-radius: 3px;
+      font-family: var(--font); font-size: 0.8rem; font-weight: 700;
+      cursor: pointer; letter-spacing: 0.5px; transition: all 0.18s;
+    }
+    .btn-red {
+      background: var(--red-mid); color: #fff;
+    }
+    .btn-red:hover { background: var(--red-bright); box-shadow: 0 0 12px var(--red-glow); }
+    .btn-ghost {
+      background: transparent; border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+    .btn-ghost:hover { border-color: var(--red-dim); color: var(--text-main); }
+    .btn-danger { background: #3a0808; color: #e05050; }
+    .btn-danger:hover { background: #5a0808; }
+
+    /* Login screen */
+    .login-wrap {
+      display: flex; align-items: center; justify-content: center;
+      height: 100vh; background: var(--bg-deep);
+    }
+    .login-box {
+      width: 320px; background: var(--bg-panel);
+      border: 1px solid var(--border); border-radius: 6px; padding: 32px 28px;
+    }
+    .login-logo {
+      font-size: 1.6rem; font-weight: 700; color: var(--red-bright);
+      letter-spacing: 3px; text-align: center; margin-bottom: 8px;
+      text-shadow: 0 0 24px var(--red-bright);
+    }
+    .login-sub {
+      font-size: 0.68rem; color: var(--text-muted); text-align: center;
+      letter-spacing: 1px; margin-bottom: 24px;
+    }
+    .error-msg { color: #e05050; font-size: 0.75rem; margin-top: 8px; }
+
+    /* Live feed items */
+    .live-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 6px 0; border-bottom: 1px solid #161616; font-size: 0.8rem;
+      animation: fadeIn 0.3s;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
+    .live-ip { color: var(--red-bright); min-width: 120px; font-size: 0.75rem; }
+    .live-domain { flex: 1; color: var(--text-main); }
+    .live-type { font-size: 0.65rem; color: var(--text-muted); }
+    .live-time { font-size: 0.65rem; color: var(--text-muted); min-width: 60px; text-align: right; }
+
+    /* Toggle switch */
+    .toggle { position: relative; display: inline-block; width: 36px; height: 20px; }
+    .toggle input { display: none; }
+    .toggle-slider {
+      position: absolute; inset: 0; border-radius: 20px;
+      background: #2a2a2a; cursor: pointer; transition: 0.2s;
+    }
+    .toggle-slider::before {
+      content: ''; position: absolute;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: var(--text-muted); top: 3px; left: 3px;
+      transition: 0.2s;
+    }
+    .toggle input:checked + .toggle-slider { background: var(--red-dim); }
+    .toggle input:checked + .toggle-slider::before {
+      transform: translateX(16px); background: var(--red-bright);
+    }
+
+    .flex { display: flex; }
+    .items-center { align-items: center; }
+    .justify-between { justify-content: space-between; }
+    .gap-8 { gap: 8px; }
+    .gap-12 { gap: 12px; }
+    .mt-4 { margin-top: 4px; }
+    .mt-8 { margin-top: 8px; }
+    .mt-16 { margin-top: 16px; }
+    .text-muted { color: var(--text-muted); }
+    .text-red { color: var(--red-bright); }
+    .text-sm { font-size: 0.78rem; }
+    .bold { font-weight: 700; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } = Recharts;
+
+// ─────────────────────────────────────────────
+// API helper
+// ─────────────────────────────────────────────
+
+const api = {
+  token: () => localStorage.getItem('tspu_token'),
+  onUnauth: null,  // set by App to trigger logout
+
+  headers: () => ({
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${api.token()}`
+  }),
+
+  _handle: (resp) => {
+    if (resp.status === 401 || resp.status === 403) {
+      localStorage.removeItem('tspu_token');
+      if (api.onUnauth) api.onUnauth();
+      return Promise.reject(new Error('Unauthorised'));
+    }
+    return resp.json();
+  },
+
+  get: (path) =>
+    fetch(path, { headers: api.headers() }).then(api._handle),
+
+  post: (path, body) =>
+    fetch(path, { method: 'POST', headers: api.headers(), body: JSON.stringify(body) }).then(api._handle),
+
+  put: (path, body) =>
+    fetch(path, { method: 'PUT', headers: api.headers(), body: JSON.stringify(body) }).then(api._handle),
+
+  del: (path) =>
+    fetch(path, { method: 'DELETE', headers: api.headers() }).then(api._handle),
+};
+
+function fmtDateInput(ts) {
+  // Manual date formatter — avoids toISOString RangeError on bad system clocks
+  try {
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return '';
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  } catch(e) { return ''; }
+}
+
+function fmtSeconds(s) {
+  if (!s) return '0s';
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s/60)}m ${s%60}s`;
+  return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+}
+
+function fmtTs(ts) {
+  return new Date(ts * 1000).toLocaleTimeString();
+}
+
+// ─────────────────────────────────────────────
+// Login screen
+// ─────────────────────────────────────────────
+
+function LoginScreen({ onLogin }) {
+  const [pass, setPass] = useState('');
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    setLoading(true); setErr('');
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pass })
+      });
+      const data = await res.json();
+      if (data.token) {
+        localStorage.setItem('tspu_token', data.token);
+        onLogin();
+      } else {
+        setErr(data.error || 'Auth failed');
+      }
+    } catch(e) {
+      setErr('Connection error');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="login-wrap">
+      <div className="login-box">
+        <div className="login-logo">TSPU X</div>
+        <div className="login-sub">NETWORK MONITORING SYSTEM</div>
+        <div className="form-row">
+          <label>ADMIN PASSWORD</label>
+          <input
+            type="password" value={pass}
+            onChange={e => setPass(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && submit()}
+            autoFocus
+          />
+        </div>
+        {err && <div className="error-msg">{err}</div>}
+        <div style={{marginTop: 16}}>
+          <button className="btn btn-red" style={{width:'100%'}} onClick={submit} disabled={loading}>
+            {loading ? 'CONNECTING...' : 'AUTHENTICATE'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Monitor screen — live events feed
+// ─────────────────────────────────────────────
+
+function MonitorScreen() {
+  const [events, setEvents] = useState([]);
+  const [clients, setClients] = useState([]);
+  const esRef = useRef(null);
+
+  useEffect(() => {
+    // Poll active clients every 5s
+    const pollClients = async () => {
+      // Wide range: cover both past and future timestamps from generator
+      const data = await api.get(`/api/stats/clients?from=0&to=9999999999`);
+      if (Array.isArray(data)) setClients(data);
+    };
+    pollClients();
+    const t = setInterval(pollClients, 5000);
+
+    // SSE live events with auto-reconnect
+    let sseRetryDelay = 2000;
+    let sseActive = true;
+
+    const connectSSE = () => {
+      if (!sseActive) return;
+      const token = api.token();
+      const sse = new EventSource(`/api/events/live?token=${token}`);
+      sse.onmessage = (e) => {
+        sseRetryDelay = 2000; // reset backoff on success
+        try {
+          const ev = JSON.parse(e.data);
+          setEvents(prev => [ev, ...prev].slice(0, 200));
+        } catch(_) {}
+      };
+      sse.onerror = () => {
+        sse.close();
+        if (sseActive) {
+          setTimeout(connectSSE, sseRetryDelay);
+          sseRetryDelay = Math.min(sseRetryDelay * 2, 30000); // cap at 30s
+        }
+      };
+      esRef.current = sse;
+    };
+    connectSSE();
+
+    return () => { sseActive = false; clearInterval(t); if (esRef.current) esRef.current.close(); };
+  }, []);
+
+  return (
+    <div>
+      <div className="page-title">⬤ Live Monitor</div>
+
+      <div className="grid-3" style={{marginBottom: 16}}>
+        <div className="card">
+          <div className="stat-num">{clients.length}</div>
+          <div className="stat-label">ACTIVE CLIENTS</div>
+        </div>
+        <div className="card">
+          <div className="stat-num">{events.length}</div>
+          <div className="stat-label">LIVE EVENTS (BUFFER)</div>
+        </div>
+        <div className="card">
+          <div className="stat-num" style={{color:'var(--green)'}}>ON</div>
+          <div className="stat-label">CAPTURE STATUS</div>
+        </div>
+      </div>
+
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-title">Active Clients</div>
+          <table className="tbl">
+            <thead>
+              <tr><th>IP</th><th>Total Requests</th><th>Time Online</th></tr>
+            </thead>
+            <tbody>
+              {clients.map(c => (
+                <tr key={c.ip}>
+                  <td className="text-red">{c.ip}</td>
+                  <td>{c.count}</td>
+                  <td>{fmtSeconds(c.totalSeconds)}</td>
+                </tr>
+              ))}
+              {clients.length === 0 &&
+                <tr><td colSpan={3} className="text-muted" style={{padding:'12px 10px'}}>No active clients</td></tr>
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card">
+          <div className="card-title">Event Stream</div>
+          <div style={{maxHeight: 320, overflowY: 'auto'}}>
+            {events.map((ev, i) => (
+              <div className="live-item" key={i}>
+                <span className="live-ip">{ev.ip}</span>
+                <span className="live-domain">{ev.domain}</span>
+                <span className="live-type badge badge-gray">{ev.type}</span>
+                <span className="live-time">{fmtTs(ev.ts)}</span>
+              </div>
+            ))}
+            {events.length === 0 &&
+              <div className="text-muted text-sm" style={{padding:'12px 0'}}>Waiting for events…</div>
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Analytics screen
+// ─────────────────────────────────────────────
+
+
+function DatePicker({ value, onChange }) {
+  const now = new Date();
+  // Parse current value or fall back to today
+  const d = (value && value > 0) ? new Date(value * 1000) : now;
+  const y   = isNaN(d.getTime()) ? now.getUTCFullYear()  : d.getUTCFullYear();
+  const m   = isNaN(d.getTime()) ? now.getUTCMonth() + 1 : d.getUTCMonth() + 1;
+  const day = isNaN(d.getTime()) ? now.getUTCDate()       : d.getUTCDate();
+
+  const years = [];
+  for (let i = 2024; i <= 2028; i++) years.push(i);
+
+  const update = (ny, nm, nd) => {
+    const dt = new Date(Date.UTC(ny, nm - 1, nd, 0, 0, 0));
+    if (!isNaN(dt.getTime())) onChange(Math.floor(dt.getTime() / 1000));
+  };
+
+  return (
+    <div style={{display:'flex', gap:4}}>
+      <select value={y} style={{width:72}} onChange={e => update(Number(e.target.value), m, day)}>
+        {years.map(yr => <option key={yr} value={yr}>{yr}</option>)}
+      </select>
+      <select value={m} style={{width:52}} onChange={e => update(y, Number(e.target.value), day)}>
+        {[1,2,3,4,5,6,7,8,9,10,11,12].map(mo =>
+          <option key={mo} value={mo}>{String(mo).padStart(2,'0')}</option>
+        )}
+      </select>
+      <select value={day} style={{width:52}} onChange={e => update(y, m, Number(e.target.value))}>
+        {Array.from({length:31},(_,i)=>i+1).map(dd =>
+          <option key={dd} value={dd}>{String(dd).padStart(2,'0')}</option>
+        )}
+      </select>
+    </div>
+  );
+}
+
+function AnalyticsScreen() {
+  const [clients, setClients] = useState([]);
+  const [selectedIp, setSelectedIp] = useState('');
+  const [domains, setDomains] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState('seconds');
+  const [sortDir, setSortDir] = useState('desc');
+  const PAGE_SIZE = 20;
+
+  useEffect(() => {
+    api.get('/api/stats/clients?from=0&to=9999999999')
+      .then(data => { if (Array.isArray(data)) setClients(data); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => { setPage(0); }, [selectedIp, search, sort, sortDir]);
+
+  useEffect(() => {
+    if (!selectedIp) return;
+    const params = new URLSearchParams({
+      ip: selectedIp, from: 0, to: 9999999999,
+      search, sort, dir: sortDir, page, size: PAGE_SIZE
+    });
+    api.get(`/api/stats/domains?${params}`)
+      .then(data => {
+        if (data && data.rows) { setDomains(data.rows); setTotal(data.total); }
+      }).catch(() => {});
+  }, [selectedIp, search, sort, sortDir, page]);
+
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+
+  const toggleSort = (col) => {
+    if (sort === col) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
+    else { setSort(col); setSortDir('desc'); }
+  };
+
+  const SortIcon = ({col}) => {
+    if (sort !== col) return <span style={{color:'#444'}}> ↕</span>;
+    return <span style={{color:'var(--red-bright)'}}>{sortDir === 'desc' ? ' ↓' : ' ↑'}</span>;
+  };
+
+  return (
+    <div>
+      <div className="page-title">Analytics</div>
+
+      <div className="card">
+        <div className="flex gap-12 items-center" style={{flexWrap:'wrap'}}>
+          <div style={{flex:1, minWidth:160}}>
+            <label>SELECT CLIENT</label>
+            <select value={selectedIp} onChange={e => setSelectedIp(e.target.value)}>
+              <option value="">— choose IP —</option>
+              {clients.map(c => <option key={c.ip} value={c.ip}>{c.ip} ({c.count} req)</option>)}
+            </select>
+          </div>
+          {selectedIp && <>
+            <div style={{flex:1, minWidth:160}}>
+              <label>SEARCH DOMAIN</label>
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="youtube.com" />
+            </div>
+            <div style={{paddingTop:18}}>
+              <a href={`/api/stats/export?ip=${selectedIp}&from=0&to=9999999999`}
+                className="btn btn-ghost">Export CSV</a>
+            </div>
+          </>}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Manage Clients — Delete from Statistics</div>
+        <div style={{display:'flex', flexWrap:'wrap', gap:8}}>
+          {clients.map(c => (
+            <button key={c.ip} className="btn btn-danger"
+              style={{padding:'4px 12px', fontSize:'0.75rem'}}
+              onClick={() => {
+                if (!confirm(`Delete all stats for ${c.ip}?`)) return;
+                api.del(`/api/stats/delete?ip=${c.ip}`)
+                  .then(() => api.get('/api/stats/clients?from=0&to=9999999999')
+                    .then(data => { if (Array.isArray(data)) setClients(data); }))
+                  .catch(() => {});
+              }}>
+              ✕ {c.ip}
+            </button>
+          ))}
+          {clients.length === 0 && <span className="text-muted text-sm">No clients in database</span>}
+        </div>
+      </div>
+
+      {selectedIp && (
+        <div className="card">
+          <div className="flex justify-between items-center" style={{marginBottom:10}}>
+            <div className="card-title" style={{marginBottom:0}}>
+              All Domains — {total} total
+            </div>
+            <div className="flex gap-8 items-center">
+              <button className="btn btn-ghost" style={{padding:'3px 10px'}}
+                disabled={page === 0} onClick={() => setPage(p => p-1)}>← Prev</button>
+              <span className="text-muted text-sm">{page+1} / {Math.max(1, totalPages)}</span>
+              <button className="btn btn-ghost" style={{padding:'3px 10px'}}
+                disabled={page >= totalPages-1} onClick={() => setPage(p => p+1)}>Next →</button>
+            </div>
+          </div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Domain</th>
+                <th style={{cursor:'pointer'}} onClick={() => toggleSort('seconds')}>
+                  Time<SortIcon col="seconds" />
+                </th>
+                <th style={{cursor:'pointer'}} onClick={() => toggleSort('count')}>
+                  Requests<SortIcon col="count" />
+                </th>
+                <th>Bar</th>
+              </tr>
+            </thead>
+            <tbody>
+              {domains.map((d, i) => (
+                <tr key={d.domain}>
+                  <td className="text-muted">{page * PAGE_SIZE + i + 1}</td>
+                  <td>{d.domain}</td>
+                  <td>{fmtSeconds(d.totalSeconds)}</td>
+                  <td>{d.count}</td>
+                  <td style={{width:100}}>
+                    <div className="prog-wrap">
+                      <div className="prog-bar" style={{
+                        width: `${domains.length > 0 && domains[0].totalSeconds > 0
+                          ? (d.totalSeconds / domains[0].totalSeconds) * 100 : 0}%`
+                      }} />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {domains.length === 0 &&
+                <tr><td colSpan={5} className="text-muted" style={{padding:'12px 10px'}}>
+                  {selectedIp ? 'No data' : 'Select a client'}
+                </td></tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Rules screen
+// ─────────────────────────────────────────────
+
+const BLANK_RULE = {
+  id: '', scope: 'ip', target: '', domain: '',
+  time_from: '', time_to: '', days: [],
+  action: 'block_after_minutes', minutes: 30, delay_ms: 1000
+};
+
+function RulesScreen() {
+  const [rules, setRules] = useState([]);
+  const [form, setForm] = useState({ ...BLANK_RULE });
+  const [editing, setEditing] = useState(false);
+
+  const loadRules = () =>
+    api.get('/api/rules').then(data => { if (Array.isArray(data)) setRules(data); });
+
+  useEffect(() => { loadRules(); }, []);
+
+  const save = async () => {
+    if (form.id) {
+      await api.put(`/api/rules/${form.id}`, form);
+    } else {
+      await api.post('/api/rules', form);
+    }
+    setForm({ ...BLANK_RULE }); setEditing(false);
+    loadRules();
+  };
+
+  const del = async (id) => {
+    if (!confirm('Delete this rule?')) return;
+    await api.del(`/api/rules/${id}`);
+    loadRules();
+  };
+
+  const edit = (rule) => { setForm({ ...rule }); setEditing(true); };
+
+  const DAY_LABELS = ['mon','tue','wed','thu','fri','sat','sun'];
+
+  const toggleDay = (d) => {
+    setForm(f => ({
+      ...f,
+      days: f.days.includes(d) ? f.days.filter(x => x !== d) : [...f.days, d]
+    }));
+  };
+
+  return (
+    <div>
+      <div className="page-title">Rules & Limits</div>
+
+      <div className="card">
+        <div className="card-title">{editing ? 'Edit Rule' : 'New Rule'}</div>
+        <div className="form-row-2">
+          <div className="form-row">
+            <label>SCOPE</label>
+            <select value={form.scope} onChange={e => setForm(f => ({...f, scope: e.target.value}))}>
+              <option value="ip">Single IP</option>
+              <option value="subnet">Subnet (CIDR)</option>
+              <option value="global">All Clients</option>
+            </select>
+          </div>
+          {form.scope !== 'global' && (
+            <div className="form-row">
+              <label>TARGET IP / CIDR</label>
+              <input value={form.target} onChange={e => setForm(f => ({...f, target: e.target.value}))}
+                placeholder="192.168.1.42 or 10.0.0.0/24" />
+            </div>
+          )}
+        </div>
+
+        <div className="form-row-2">
+          <div className="form-row">
+            <label>DOMAIN (exact, *.example.com, or ~regex)</label>
+            <input value={form.domain} onChange={e => setForm(f => ({...f, domain: e.target.value}))}
+              placeholder="reddit.com" />
+          </div>
+          <div className="form-row">
+            <label>ACTION</label>
+            <select value={form.action} onChange={e => setForm(f => ({...f, action: e.target.value}))}>
+              <option value="block">Block always</option>
+              <option value="block_after_minutes">Block after N minutes/day</option>
+              <option value="throttle">Throttle (slow down)</option>
+              <option value="warn">Warn only</option>
+            </select>
+          </div>
+        </div>
+
+        {form.action === 'block_after_minutes' && (
+          <div className="form-row" style={{maxWidth: 180}}>
+            <label>DAILY LIMIT (MINUTES)</label>
+            <input type="number" value={form.minutes}
+              onChange={e => setForm(f => ({...f, minutes: parseInt(e.target.value) || 0}))} />
+          </div>
+        )}
+        {form.action === 'throttle' && (
+          <div className="form-row" style={{maxWidth: 220}}>
+            <label>DELAY PER REQUEST (MS)</label>
+            <input type="number" value={form.delay_ms || 1000}
+              onChange={e => setForm(f => ({...f, delay_ms: parseInt(e.target.value) || 1000}))}
+              placeholder="1000" />
+            <div className="text-muted text-sm mt-4">500 = barely noticeable, 3000 = very slow</div>
+          </div>
+        )}
+
+        <div className="form-row-2">
+          <div className="form-row">
+            <label>TIME FROM (optional)</label>
+            <input type="time" value={form.time_from}
+              onChange={e => setForm(f => ({...f, time_from: e.target.value}))} />
+          </div>
+          <div className="form-row">
+            <label>TIME TO (optional)</label>
+            <input type="time" value={form.time_to}
+              onChange={e => setForm(f => ({...f, time_to: e.target.value}))} />
+          </div>
+        </div>
+
+        <div className="form-row">
+          <label>DAYS (leave empty = all days)</label>
+          <div className="flex gap-8 mt-4">
+            {DAY_LABELS.map(d => (
+              <button key={d}
+                className={`btn ${form.days.includes(d) ? 'btn-red' : 'btn-ghost'}`}
+                style={{padding:'4px 10px', fontSize:'0.72rem'}}
+                onClick={() => toggleDay(d)}>
+                {d.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex gap-8 mt-8">
+          <button className="btn btn-red" onClick={save}>
+            {editing ? 'UPDATE RULE' : 'ADD RULE'}
+          </button>
+          {editing && (
+            <button className="btn btn-ghost" onClick={() => { setForm({...BLANK_RULE}); setEditing(false); }}>
+              CANCEL
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Active Rules ({rules.length})</div>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>Scope</th><th>Target</th><th>Domain</th>
+              <th>Action</th><th>Time</th><th>Days</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rules.map(r => (
+              <tr key={r.id}>
+                <td><span className="badge badge-gray">{r.scope}</span></td>
+                <td className="text-red">{r.target || '—'}</td>
+                <td>{r.domain}</td>
+                <td>
+                  <span className={`badge ${
+                    r.action === 'block' || r.action === 'block_after_minutes' ? 'badge-red' :
+                    r.action === 'throttle' ? 'badge-gray' : 'badge-green'
+                  }`}>
+                    {r.action === 'block_after_minutes' ? `≤${r.minutes}min` :
+                     r.action === 'throttle' ? `⏱ ${r.delay_ms||1000}ms` : r.action}
+                  </span>
+                </td>
+                <td className="text-muted text-sm">
+                  {r.time_from && r.time_to ? `${r.time_from}–${r.time_to}` : '—'}
+                </td>
+                <td className="text-muted text-sm">
+                  {r.days && r.days.length > 0 ? r.days.join(',') : 'all'}
+                </td>
+                <td>
+                  <button className="btn btn-ghost" style={{padding:'3px 10px', marginRight:6}}
+                    onClick={() => edit(r)}>edit</button>
+                  <button className="btn btn-danger" style={{padding:'3px 10px'}}
+                    onClick={() => del(r.id)}>del</button>
+                </td>
+              </tr>
+            ))}
+            {rules.length === 0 &&
+              <tr><td colSpan={7} className="text-muted" style={{padding:'12px 10px'}}>No rules configured</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Settings screen
+// ─────────────────────────────────────────────
+
+function SettingsScreen({ onLogout }) {
+  const [newPass, setNewPass] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const changePass = async () => {
+    const res = await api.post('/api/admin/password', { password: newPass });
+    setMsg(res.ok ? 'Password updated.' : (res.error || 'Error'));
+  };
+
+  const logout = async () => {
+    await api.post('/api/auth/logout', {});
+    localStorage.removeItem('tspu_token');
+    onLogout();
+  };
+
+  return (
+    <div>
+      <div className="page-title">Settings</div>
+      <div className="card" style={{maxWidth: 400}}>
+        <div className="card-title">Change Admin Password</div>
+        <div className="form-row">
+          <label>NEW PASSWORD</label>
+          <input type="password" value={newPass} onChange={e => setNewPass(e.target.value)} />
+        </div>
+        <button className="btn btn-red" onClick={changePass}>UPDATE</button>
+        {msg && <div className="mt-8 text-sm text-muted">{msg}</div>}
+      </div>
+      <div className="card" style={{maxWidth: 400}}>
+        <div className="card-title">Session</div>
+        <button className="btn btn-ghost" onClick={logout}>LOG OUT</button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// App shell
+// ─────────────────────────────────────────────
+
+const SCREENS = [
+  { id: 'monitor',   label: '⬤  Monitor',   comp: MonitorScreen },
+  { id: 'analytics', label: '▨  Analytics', comp: AnalyticsScreen },
+  { id: 'rules',     label: '⊘  Rules',     comp: RulesScreen },
+  { id: 'settings',  label: '⚙  Settings',  comp: null }
+];
+
+function App() {
+  const [authed, setAuthed] = useState(!!localStorage.getItem('tspu_token'));
+  const [screen, setScreen] = useState('monitor');
+
+  useEffect(() => {
+    api.onUnauth = () => { setAuthed(false); };
+    return () => { api.onUnauth = null; };
+  }, []);
+
+  if (!authed) return <LoginScreen onLogin={() => setAuthed(true)} />;
+
+  const current = SCREENS.find(s => s.id === screen);
+  const Content = screen === 'settings'
+    ? () => <SettingsScreen onLogout={() => setAuthed(false)} />
+    : (current?.comp || MonitorScreen);
+
+  return (
+    <div className="layout">
+      <aside className="sidebar">
+        <div className="logo">
+          TSPU X
+          <span>NETWORK MONITOR v1.0</span>
+        </div>
+        <nav className="nav">
+          {SCREENS.map(s => (
+            <div key={s.id}
+              className={`nav-item${screen === s.id ? ' active' : ''}`}
+              onClick={() => setScreen(s.id)}>
+              {s.label}
+            </div>
+          ))}
+        </nav>
+        <div className="sidebar-footer">
+          <span className="status-dot" />
+          <span className="text-muted text-sm">System Online</span>
+        </div>
+      </aside>
+      <main className="main">
+        <Content />
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

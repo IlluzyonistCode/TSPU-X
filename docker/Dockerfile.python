@@ -1,0 +1,23 @@
+FROM python:3.12-alpine
+
+RUN apk add --no-cache gcc musl-dev libffi-dev
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app.py .
+COPY templates ./templates
+COPY static ./static
+
+EXPOSE 5000
+
+# gevent worker: каждый worker может держать много соединений одновременно
+# это решает проблему когда SSE блокирует обычные запросы
+CMD ["gunicorn", \
+     "--bind", "0.0.0.0:5000", \
+     "--worker-class", "gevent", \
+     "--workers", "4", \
+     "--worker-connections", "100", \
+     "--timeout", "300", \
+     "app:app"]

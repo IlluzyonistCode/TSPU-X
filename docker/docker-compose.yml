@@ -1,0 +1,133 @@
+networks:
+  tspu_net:
+    driver: bridge
+
+volumes:
+  tspu_db:
+  tspu_rules:
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks: [tspu_net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+  # ── C++ sniffer / proxy ───────────────────────────────────────────
+  sniffer:
+    build:
+      context: ../cpp
+      dockerfile: ../docker/Dockerfile.cpp
+    restart: on-failure
+    networks: [tspu_net]
+    ports:
+      - "8888:8888"
+      - "4041:4041"
+      - "4042:4042"
+    environment:
+      ELIXIR_HOST: "elixir"
+      ELIXIR_PORT: "4040"
+      # Upstream SOCKS5 proxy — all outbound traffic is forwarded through it.
+      # Remove or leave empty to disable (direct connections).
+      UPSTREAM_SOCKS5_HOST: "host.docker.internal"
+      UPSTREAM_SOCKS5_PORT: "11111"
+    depends_on:
+      - elixir
+    links:
+      - elixir
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - "/usr/local/bin/tspu_sniffer"
+      - "--mode"
+      - "proxy"
+      - "--proxy-port"
+      - "8888"
+      - "--elixir-host"
+      - "elixir"
+      - "--elixir-port"
+      - "4040"
+      - "--cmd-port"
+      - "4041"
+      - "--health-port"
+      - "4042"
+      - "--verbose"
+    volumes:
+      - /var/log/tspu_x:/var/log/tspu_x
+
+  # ── Elixir ───────────────────────────────────────────────────────
+  elixir:
+    build:
+      context: ../elixir
+      dockerfile: ../docker/Dockerfile.elixir
+    restart: on-failure
+    networks: [tspu_net]
+    ports:
+      - "4040:4040"   # event ingestion from C++
+      - "4043:4043"   # metrics HTTP
+    environment:
+      MIX_ENV: prod
+      REDIS_URL: redis://redis:6379
+      SCALA_URL: http://scala:8080
+      CPP_HOST: sniffer
+      CPP_CMD_PORT: "4041" 
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - tspu_rules:/etc/tspu_x
+
+  # ── Scala ─────────────────────────────────────────────────────────
+  scala:
+    build:
+      context: ../scala
+      dockerfile: ../docker/Dockerfile.scala
+    restart: on-failure
+    networks: [tspu_net]
+    ports:
+      - "8085:8080"   # main API
+      - "8081:8081"   # metrics
+    environment:
+      DB_PATH: /var/lib/tspu_x/stats.db
+      SCALA_HOST: "0.0.0.0"
+      SCALA_PORT: "8080"
+      SCALA_METRICS_PORT: "8081"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - tspu_db:/var/lib/tspu_x
+
+  # ── Python Flask ──────────────────────────────────────────────────
+  python:
+    build:
+      context: ../python
+      dockerfile: ../docker/Dockerfile.python
+    restart: on-failure
+    networks: [tspu_net]
+    ports:
+      - "5005:5000"
+    environment:
+      SCALA_URL: http://scala:8080
+      SCALA_HEALTH: http://scala:8081
+      REDIS_URL: redis://redis:6379/0
+      RULES_FILE: /etc/tspu_x/rules.json
+      FLASK_PORT: "5000"
+      ADMIN_PASS: "admin"
+      ELIXIR_METRICS_URL: http://elixir:4043
+      # C++ health is on host network — accessible via host.docker.internal or 127.0.0.1
+      CPP_HEALTH_HOST: "host.docker.internal"
+      CPP_HEALTH_PORT: "4042"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - scala
+      - redis
+    volumes:
+      - tspu_rules:/etc/tspu_x
