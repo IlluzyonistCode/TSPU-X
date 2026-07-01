@@ -82,8 +82,8 @@ TSPU X is a polyglot network traffic management platform. A C++ packet sniffer a
 ### Installation
 
 ```sh
-git clone "https://github.com/IlluzyonistCode/TSPU X"
-cd "TSPU X"
+git clone "https://github.com/IlluzyonistCode/TSPU-X"
+cd "TSPU-X"
 docker-compose up --build
 ```
 
@@ -97,9 +97,9 @@ docker-compose up --build
 
 ## Contributing
 
-- [Report Issues](https://github.com/IlluzyonistCode/TSPU X/issues)
-- [Submit Pull Requests](https://github.com/IlluzyonistCode/TSPU X/pulls)
-- [Discussions](https://github.com/IlluzyonistCode/TSPU X/discussions)
+- [Report Issues](https://github.com/IlluzyonistCode/TSPU-X/issues)
+- [Submit Pull Requests](https://github.com/IlluzyonistCode/TSPU-X/pulls)
+- [Discussions](https://github.com/IlluzyonistCode/TSPU-X/discussions)
 
 ---
 
