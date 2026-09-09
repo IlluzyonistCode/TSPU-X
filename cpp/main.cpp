@@ -41,6 +41,9 @@
 // libpcap (sniffer mode)
 #include <pcap.h>
 
+// tproxy: get original destination
+#include <linux/netfilter_ipv4.h>
+
 // spdlog — structured JSON logging
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_sinks.h>
@@ -69,7 +72,7 @@ void init_logger(const std::string& component = "sniffer") {
 // Config
 // ─────────────────────────────────────────────
 
-enum class Mode { Sniffer, Proxy };
+enum class Mode { Sniffer, Proxy, TProxy };
 
 struct Config {
     Mode        mode             = Mode::Sniffer;
@@ -80,6 +83,7 @@ struct Config {
     int         cmd_port        = 4041;           // command listener
     int         health_port     = 4042;           // health check
     int         proxy_port      = 8888;           // SOCKS5 proxy listen port (proxy mode)
+    int         tproxy_port     = 8889;           // transparent proxy listen port (tproxy mode)
     bool        verbose         = false;
     // cleanup interval for expired entries
     int         cleanup_interval_s = 10;
@@ -118,15 +122,43 @@ static int64_t now_ts() {
 
 bool is_blocked(const std::string& ip, const std::string& domain) {
     std::lock_guard<std::mutex> lk(g_block_mu);
-    auto key = ip + ':' + domain;
-    auto it = g_block_table.find(key);
-    if (it == g_block_table.end()) return false;
-    if (it->second.until_ts == 0) return true;
-    if (now_ts() >= it->second.until_ts) {
-        g_block_table.erase(it);
-        return false;
+
+    // Helper lambda: check one key
+    auto check = [&](const std::string& key) -> bool {
+        auto it = g_block_table.find(key);
+        if (it == g_block_table.end()) return false;
+        if (it->second.until_ts == 0) return true;
+        if (now_ts() >= it->second.until_ts) { g_block_table.erase(it); return false; }
+        return true;
+    };
+
+    // Exact match for this IP
+    if (check(ip + ':' + domain)) return true;
+    // Exact match global
+    if (check("global:" + domain)) return true;
+
+    // Wildcard match: check all *.suffix patterns for both ip and global
+    for (auto& kv : g_block_table) {
+        const std::string& key = kv.first;
+        // key format: "ip:*.suffix" or "global:*.suffix"
+        size_t colon = key.find(':');
+        if (colon == std::string::npos) continue;
+        std::string key_ip  = key.substr(0, colon);
+        std::string key_dom = key.substr(colon + 1);
+        if (key_ip != ip && key_ip != "global") continue;
+        if (key_dom.size() < 3 || key_dom[0] != '*' || key_dom[1] != '.') continue;
+        // key_dom = "*.pornhub.com" → suffix = ".pornhub.com"
+        std::string suffix = key_dom.substr(1);       // ".xnxx.com"
+        std::string apex   = key_dom.substr(2);       // "xnxx.com" (без "*.")
+        bool matches_sub  = domain.size() >= suffix.size() &&
+            domain.compare(domain.size() - suffix.size(), suffix.size(), suffix) == 0;
+        bool matches_apex = (domain == apex);
+        if (matches_sub || matches_apex) {
+            if (kv.second.until_ts == 0) return true;
+            if (now_ts() < kv.second.until_ts) return true;
+        }
     }
-    return true;
+    return false;
 }
 
 // Returns delay in ms (0 = no throttle)
@@ -645,9 +677,8 @@ static int connect_remote(const std::string& host, uint16_t port) {
         req.reserve(7 + dlen);
         req.insert(req.end(), {0x05, 0x01, 0x00, 0x03, dlen});
         req.insert(req.end(), host.begin(), host.end());
-        uint16_t port_be = htons(port);
-        req.push_back(static_cast<uint8_t>(port_be >> 8));
-        req.push_back(static_cast<uint8_t>(port_be & 0xFF));
+        req.push_back(static_cast<uint8_t>(port >> 8));
+        req.push_back(static_cast<uint8_t>(port & 0xFF));
         if (send(fd, req.data(), req.size(), MSG_NOSIGNAL) != static_cast<ssize_t>(req.size())) {
             close(fd); return -1;
         }
@@ -808,6 +839,107 @@ void run_proxy() {
 }
 
 // ─────────────────────────────────────────────
+// MODE C: tproxy — transparent TCP proxy
+// iptables TPROXY redirects LAN traffic here.
+// We read the original destination via SO_ORIGINAL_DST,
+// then apply the same block/throttle/SNI logic as SOCKS5 mode,
+// and forward through upstream SOCKS5 (sing-box mixed-in).
+// ─────────────────────────────────────────────
+
+static void handle_tproxy_client(int cfd, const std::string& peer_ip) {
+    // Get original destination via SO_ORIGINAL_DST
+    sockaddr_in orig{};
+    socklen_t   orig_len = sizeof(orig);
+    if (getsockopt(cfd, SOL_IP, SO_ORIGINAL_DST, &orig, &orig_len) < 0) {
+        close(cfd); return;
+    }
+
+    char dst_buf[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &orig.sin_addr, dst_buf, sizeof(dst_buf));
+    std::string dest_host(dst_buf);
+    uint16_t    dest_port = ntohs(orig.sin_port);
+
+    std::string observed_domain = dest_host;
+
+    // Block check
+    if (is_blocked(peer_ip, observed_domain)) {
+        g_log->info(R"({{"event":"tproxy_blocked","ip":"{}","domain":"{}"}})", peer_ip, observed_domain);
+        close(cfd); return;
+    }
+
+    int delay_ms = get_throttle_ms(peer_ip, observed_domain);
+
+    // Connect upstream
+    int rfd = connect_remote(dest_host, dest_port);
+    if (rfd < 0) { close(cfd); return; }
+
+    // For HTTPS: peek TLS ClientHello to extract SNI
+    if (dest_port == 443) {
+        uint8_t peek[4096];
+        ssize_t pn = recv(cfd, peek, sizeof(peek), MSG_PEEK);
+        if (pn > 0) {
+            std::string sni = tls::extract_sni(peek, static_cast<size_t>(pn));
+            if (!sni.empty()) observed_domain = sni;
+        }
+        // Re-check block with real SNI
+        if (is_blocked(peer_ip, observed_domain)) {
+            g_log->info(R"({{"event":"tproxy_blocked","ip":"{}","domain":"{}"}})", peer_ip, observed_domain);
+            close(rfd); close(cfd); return;
+        }
+        delay_ms = get_throttle_ms(peer_ip, observed_domain);
+    }
+
+    // Log event
+    handle_domain_event(peer_ip, observed_domain,
+                        dest_port == 443 ? "sni" : "dns",
+                        now_ts());
+
+    g_log->info("tproxy tunnel: {}:{} via {}:{}",
+                observed_domain, dest_port,
+                g_cfg.upstream_socks5_host, g_cfg.upstream_socks5_port);
+
+    if (delay_ms > 0) {
+        struct timespec ts_sleep = {delay_ms / 1000, (delay_ms % 1000) * 1000000L};
+        nanosleep(&ts_sleep, nullptr);
+    }
+
+    relay(cfd, rfd);
+    close(cfd);
+    close(rfd);
+}
+
+void run_tproxy() {
+    int srv = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    // IP_TRANSPARENT allows binding to non-local addresses (required for tproxy)
+    setsockopt(srv, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt));
+
+    sockaddr_in a{};
+    a.sin_family      = AF_INET;
+    a.sin_addr.s_addr = INADDR_ANY;
+    a.sin_port        = htons(static_cast<uint16_t>(g_cfg.tproxy_port));
+    if (bind(srv, reinterpret_cast<sockaddr*>(&a), sizeof(a)) < 0) {
+        g_log->critical("Cannot bind tproxy port {}", g_cfg.tproxy_port);
+        std::exit(1);
+    }
+    listen(srv, 128);
+    g_log->info("TProxy listener on port {}", g_cfg.tproxy_port);
+
+    while (g_running) {
+        sockaddr_in ca{}; socklen_t cl = sizeof(ca);
+        int cfd = accept(srv, reinterpret_cast<sockaddr*>(&ca), &cl);
+        if (cfd < 0) continue;
+        char peer_buf[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &ca.sin_addr, peer_buf, sizeof(peer_buf));
+        std::string peer_ip(peer_buf);
+        std::thread([cfd, peer_ip]{ handle_tproxy_client(cfd, peer_ip); }).detach();
+    }
+    close(srv);
+}
+
+// ─────────────────────────────────────────────
 // Signal handler
 // ─────────────────────────────────────────────
 
@@ -822,12 +954,13 @@ int main(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
-        if      (a == "--mode"         && i+1<argc) { std::string m=argv[++i]; g_cfg.mode = (m=="proxy")?Mode::Proxy:Mode::Sniffer; }
+        if      (a == "--mode"         && i+1<argc) { std::string m=argv[++i]; g_cfg.mode = (m=="proxy")?Mode::Proxy:(m=="tproxy")?Mode::TProxy:Mode::Sniffer; }
         else if (a == "--iface"        && i+1<argc) g_cfg.capture_iface  = argv[++i];
         else if (a == "--pcap"         && i+1<argc) g_cfg.pcap_file      = argv[++i];
         else if (a == "--elixir-host"  && i+1<argc) g_cfg.elixir_host    = argv[++i];
         else if (a == "--elixir-port"  && i+1<argc) g_cfg.elixir_port    = std::stoi(argv[++i]);
         else if (a == "--proxy-port"   && i+1<argc) g_cfg.proxy_port     = std::stoi(argv[++i]);
+        else if (a == "--tproxy-port"          && i+1<argc) g_cfg.tproxy_port          = std::stoi(argv[++i]);
         else if (a == "--upstream-socks5"      && i+1<argc) g_cfg.upstream_socks5_host = argv[++i];
         else if (a == "--upstream-socks5-port" && i+1<argc) g_cfg.upstream_socks5_port = std::stoi(argv[++i]);
         else if (a == "--cmd-port"     && i+1<argc) g_cfg.cmd_port       = std::stoi(argv[++i]);
@@ -848,7 +981,7 @@ int main(int argc, char* argv[]) {
         if (env_port[0]) g_cfg.upstream_socks5_port = std::stoi(env_port);
 
     g_log->info("Starting TSPU X sniffer, mode={}, elixir={}:{}",
-                g_cfg.mode == Mode::Proxy ? "proxy" : "sniffer",
+                g_cfg.mode == Mode::Proxy ? "proxy" : g_cfg.mode == Mode::TProxy ? "tproxy" : "sniffer",
                 g_cfg.elixir_host, g_cfg.elixir_port);
 
     connect_elixir();
@@ -860,6 +993,8 @@ int main(int argc, char* argv[]) {
 
     if (g_cfg.mode == Mode::Proxy)
         run_proxy();
+    else if (g_cfg.mode == Mode::TProxy)
+        run_tproxy();
     else
         run_sniffer();
 

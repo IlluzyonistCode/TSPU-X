@@ -41,22 +41,39 @@ defmodule TspuX.RuleEngine do
   def apply_rule_to_active_clients(rule) do
     action = Map.get(rule, "action", "")
     domain = Map.get(rule, "domain", "")
-    if action in ["block", "throttle"] do
-      client_ips = Registry.select(TspuX.ClientRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
-      Enum.each(client_ips, fn ip ->
-        if ip_matches?(rule, ip) do
-          # Get the worker's current stats for this domain
-          case action do
-            "block" ->
-              TspuX.CppBridge.block(ip, domain)
-              Logger.info("[RuleEngine] Immediately blocked #{ip} -> #{domain}")
-            "throttle" ->
-              delay_ms = Map.get(rule, "delay_ms", 1000)
-              TspuX.CppBridge.throttle(ip, domain, delay_ms)
-            _ -> :ok
-          end
+    scope  = Map.get(rule, "scope", "")
+
+    cond do
+      # Global rule — send ONE real "global" key. C++ already supports
+      # matching "global:<domain>" in is_blocked(), it just was never
+      # used before. This way newly-connected devices, and C++ after a
+      # restart (via the periodic resync, see push_all_rules_to_cpp/0),
+      # get the block immediately without depending on which client IPs
+      # happened to be registered at the time.
+      scope == "global" and action in ["block", "throttle"] ->
+        case action do
+          "block" ->
+            log_result("block", "global", domain, TspuX.CppBridge.block("global", domain))
+          "throttle" ->
+            delay_ms = Map.get(rule, "delay_ms", 1000)
+            log_result("throttle", "global", domain, TspuX.CppBridge.throttle("global", domain, delay_ms))
         end
-      end)
+
+      action in ["block", "throttle"] ->
+        client_ips = Registry.select(TspuX.ClientRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+        Enum.each(client_ips, fn ip ->
+          if ip_matches?(rule, ip) do
+            case action do
+              "block" ->
+                log_result("block", ip, domain, TspuX.CppBridge.block(ip, domain))
+              "throttle" ->
+                delay_ms = Map.get(rule, "delay_ms", 1000)
+                log_result("throttle", ip, domain, TspuX.CppBridge.throttle(ip, domain, delay_ms))
+            end
+          end
+        end)
+
+      true -> :ok
     end
 
     if action == "block_after_minutes" do
@@ -72,18 +89,32 @@ defmodule TspuX.RuleEngine do
           end
           if stats.total_seconds >= limit_s do
             secs = 86400 - rem(System.os_time(:second), 86400)
-            TspuX.CppBridge.block(ip, domain, duration_seconds: secs)
-            Logger.info("[RuleEngine] Immediately blocked (limit exceeded) #{ip} -> #{domain}")
+            log_result("block", ip, domain, TspuX.CppBridge.block(ip, domain, duration_seconds: secs))
           end
         end
       end)
     end
   end
 
+  defp log_result(action, ip, domain, :ok) do
+    Logger.info("[RuleEngine] #{action} confirmed: #{ip} -> #{domain}")
+  end
+  defp log_result(action, ip, domain, {:error, reason}) do
+    Logger.warning("[RuleEngine] #{action} FAILED (not delivered to C++): #{ip} -> #{domain} (#{inspect(reason)})")
+  end
+
   @doc """
   When a block/throttle rule is removed, send unblock/unthrottle to C++
   for every active client that was covered by this rule.
   """
+  def unblock_for_rule(%{"action" => action, "domain" => domain, "scope" => "global"})
+      when action in ["block", "block_after_minutes", "throttle"] do
+    result = case action do
+      "throttle" -> TspuX.CppBridge.unthrottle("global", domain)
+      _          -> TspuX.CppBridge.unblock("global", domain)
+    end
+    log_result("unblock", "global", domain, result)
+  end
   def unblock_for_rule(%{"action" => action, "domain" => domain} = rule)
       when action in ["block", "block_after_minutes", "throttle"] do
     # Get all active client IPs from Registry
@@ -91,11 +122,11 @@ defmodule TspuX.RuleEngine do
     Enum.each(client_ips, fn ip ->
       # Only unblock if this rule actually covered this client
       if ip_matches?(rule, ip) do
-        case action do
+        result = case action do
           "throttle" -> TspuX.CppBridge.unthrottle(ip, domain)
           _          -> TspuX.CppBridge.unblock(ip, domain)
         end
-        Logger.info("[RuleEngine] Auto-unblocked #{ip} -> #{domain} (rule removed)")
+        log_result("unblock", ip, domain, result)
       end
     end)
   end
@@ -103,10 +134,20 @@ defmodule TspuX.RuleEngine do
 
   # ─── GenServer ──────────────────────────────
 
+  # g_block_table in C++ lives only in the sniffer process's memory and
+  # gets wiped on every sniffer restart (image rebuild, crash, docker
+  # compose up -d sniffer, etc.), while Elixir usually keeps running —
+  # so a one-shot push at RuleEngine startup isn't enough. Re-send the
+  # full active rule set on this interval so C++ self-heals after any
+  # restart without manual intervention on the Pi.
+  @resync_interval_ms 30_000
+
   @impl true
   def init(_) do
     :ets.new(@table, [:set, :named_table, :public, read_concurrency: true])
     load_from_file()
+    Process.send_after(self(), :resync_cpp, 2_000)
+    :timer.send_interval(@resync_interval_ms, :resync_cpp)
     {:ok, %{}}
   end
 
@@ -122,6 +163,21 @@ defmodule TspuX.RuleEngine do
     :ets.delete(@table, rule_id)
     Logger.info("[RuleEngine] Removed rule #{rule_id}")
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_info(:resync_cpp, state) do
+    push_all_rules_to_cpp()
+    {:noreply, state}
+  end
+
+  @doc """
+  Re-sends all active block/throttle rules to the C++ sniffer.
+  Idempotent — safe to call repeatedly.
+  """
+  def push_all_rules_to_cpp do
+    list_rules()
+    |> Enum.each(&apply_rule_to_active_clients/1)
   end
 
   # ─── Matching ───────────────────────────────

@@ -26,8 +26,11 @@ services:
     networks: [tspu_net]
     ports:
       - "8888:8888"
+      - "8889:8889"
       - "4041:4041"
       - "4042:4042"
+    cap_add:
+      - NET_ADMIN
     environment:
       ELIXIR_HOST: "elixir"
       ELIXIR_PORT: "4040"
@@ -55,6 +58,8 @@ services:
       - "4041"
       - "--health-port"
       - "4042"
+      - "--tproxy-port"
+      - "8889"
       - "--verbose"
     volumes:
       - /var/log/tspu_x:/var/log/tspu_x
@@ -73,7 +78,7 @@ services:
       MIX_ENV: prod
       REDIS_URL: redis://redis:6379
       SCALA_URL: http://scala:8080
-      CPP_HOST: sniffer
+      CPP_HOST: "192.168.88.224"
       CPP_CMD_PORT: "4041" 
     depends_on:
       redis:
