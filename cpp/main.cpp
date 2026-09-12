@@ -24,6 +24,8 @@
 #include <functional>
 #include <vector>
 #include <algorithm>
+#include <queue>
+#include <condition_variable>
 
 // POSIX / Linux
 #include <sys/socket.h>
@@ -593,8 +595,8 @@ static void relay(int a, int b) {
     char buf[16384];
     bool a_open = true, b_open = true;
 
-    // Idle timeout: kill connection if no data flows for 120s
-    const int IDLE_TIMEOUT_S = 120;
+    // Idle timeout: kill connection if no data flows for 30s
+    const int IDLE_TIMEOUT_S = 30;
 
     while (a_open || b_open) {
         FD_ZERO(&fds);
@@ -908,6 +910,67 @@ static void handle_tproxy_client(int cfd, const std::string& peer_ip) {
     close(rfd);
 }
 
+// ─────────────────────────────────────────────
+// Thread pool for tproxy — fixed worker count instead of thread-per-connection
+// ─────────────────────────────────────────────
+
+struct TproxyTask {
+    int         cfd;
+    std::string peer_ip;
+};
+
+class TproxyThreadPool {
+public:
+    explicit TproxyThreadPool(size_t n_workers) {
+        workers.reserve(n_workers);
+        for (size_t i = 0; i < n_workers; i++)
+            workers.emplace_back([this] { worker_loop(); });
+    }
+
+    ~TproxyThreadPool() {
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            stop = true;
+        }
+        cv.notify_all();
+        for (auto& w : workers) w.join();
+    }
+
+    void enqueue(int cfd, std::string peer_ip) {
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            tasks.push({cfd, std::move(peer_ip)});
+        }
+        cv.notify_one();
+    }
+
+    size_t pending() const {
+        std::lock_guard<std::mutex> lk(mu);
+        return tasks.size();
+    }
+
+private:
+    void worker_loop() {
+        while (true) {
+            TproxyTask task;
+            {
+                std::unique_lock<std::mutex> lk(mu);
+                cv.wait(lk, [this] { return !tasks.empty() || stop; });
+                if (stop && tasks.empty()) return;
+                task = std::move(tasks.front());
+                tasks.pop();
+            }
+            handle_tproxy_client(task.cfd, task.peer_ip);
+        }
+    }
+
+    std::vector<std::thread>        workers;
+    std::queue<TproxyTask>          tasks;
+    mutable std::mutex              mu;
+    std::condition_variable         cv;
+    bool                            stop = false;
+};
+
 void run_tproxy() {
     int srv = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
@@ -924,8 +987,11 @@ void run_tproxy() {
         g_log->critical("Cannot bind tproxy port {}", g_cfg.tproxy_port);
         std::exit(1);
     }
-    listen(srv, 128);
-    g_log->info("TProxy listener on port {}", g_cfg.tproxy_port);
+    listen(srv, 256);
+    g_log->info("TProxy listener on port {} (thread-pool, workers=32)", g_cfg.tproxy_port);
+
+    // Fixed-size thread pool — avoids unbounded thread creation under load
+    TproxyThreadPool pool(256);
 
     while (g_running) {
         sockaddr_in ca{}; socklen_t cl = sizeof(ca);
@@ -933,8 +999,7 @@ void run_tproxy() {
         if (cfd < 0) continue;
         char peer_buf[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &ca.sin_addr, peer_buf, sizeof(peer_buf));
-        std::string peer_ip(peer_buf);
-        std::thread([cfd, peer_ip]{ handle_tproxy_client(cfd, peer_ip); }).detach();
+        pool.enqueue(cfd, std::string(peer_buf));
     }
     close(srv);
 }
